@@ -1,0 +1,31 @@
+# Datos de ejemplo. Índice maestro de la oferta, ficticio.
+familias:
+  - nombre: "Informática y Comunicaciones"
+    sede: "Sede Central"
+    ciclos:
+      - codigo: "DAW"
+        nombre: "Desarrollo de Aplicaciones Web"
+        grado: "Grado Superior"
+        horas_totales: 2000
+        fct_horas: 400
+        turnos:
+          - "Mañana"
+          - "Semipresencial"
+        modulos:
+          - "Sistemas informáticos"
+          - "Bases de datos"
+          - "Programación"
+          - "Desarrollo web en entorno cliente"
+          - "Desarrollo web en entorno servidor"
+      - codigo: "ASIR"
+        nombre: "Administración de Sistemas Informáticos en Red"
+        grado: "Grado Superior"
+        horas_totales: 2000
+        fct_horas: 400
+        turnos:
+          - "Tarde"
+        modulos:
+          - "Implantación de sistemas operativos"
+          - "Planificación y administración de redes"
+          - "Servicios de red e Internet"
+          - "Seguridad y alta disponibilidad"

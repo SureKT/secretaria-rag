@@ -1,0 +1,112 @@
+services:
+  # 1. Base de Datos para n8n y Typebot
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+  # 2. Ollama corre nativamente en el host (fuera de Docker)
+  # Accesible desde los contenedores en http://host.docker.internal:11434
+
+  # 3. n8n (Orquestador)
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n_cerebro
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - EXECUTIONS_TIMEOUT=3600
+      - EXECUTIONS_TIMEOUT_MAX=7200
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - N8N_SECURE_COOKIE=false
+      - NODE_FUNCTION_ALLOW_BUILTIN=http,https,url
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "5678:5678"
+    depends_on:
+      - postgres
+    volumes:
+      - n8n_data:/home/node/.n8n
+    restart: always
+
+  # 4. Typebot (Frontend del Chat)
+  typebot-db:
+    image: postgres:15-alpine
+    container_name: typebot_db
+    environment:
+      POSTGRES_PASSWORD: ${TYPEBOT_DB_PASSWORD}
+      POSTGRES_DB: typebot
+    volumes:
+      - typebot_db_data:/var/lib/postgresql/data
+
+  typebot-builder:
+    image: baptistearno/typebot-builder:latest
+    container_name: typebot_builder
+    ports:
+      - "3002:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:${TYPEBOT_DB_PASSWORD}@typebot-db:5432/typebot
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - NEXT_PUBLIC_VIEWER_URL=${NEXT_PUBLIC_VIEWER_URL}
+      - ENCRYPTION_SECRET=${TYPEBOT_ENCRYPTION_SECRET}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+    depends_on:
+      - typebot-db
+
+  typebot-viewer:
+    image: baptistearno/typebot-viewer:latest
+    container_name: typebot_viewer
+    ports:
+      - "3001:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:${TYPEBOT_DB_PASSWORD}@typebot-db:5432/typebot
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - NEXT_PUBLIC_VIEWER_URL=${NEXT_PUBLIC_VIEWER_URL}
+      - ENCRYPTION_SECRET=${TYPEBOT_ENCRYPTION_SECRET}
+    depends_on:
+      - typebot-db
+
+  nginx-viewer:
+    image: nginx:alpine
+    container_name: nginx_viewer
+    ports:
+      - "3443:443"
+    volumes:
+      - ./nginx/viewer.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - typebot-viewer
+    restart: always
+
+  # 5. Qdrant (Vector Store persistente para el RAG)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant_db
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: always
+
+volumes:
+  postgres_data:
+  n8n_data:
+  typebot_db_data:
+  qdrant_data:

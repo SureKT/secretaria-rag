@@ -1,0 +1,55 @@
+# ── Secretos y credenciales ──────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# VPN: contienen claves privadas embebidas
+*.ovpn
+vpn/*.ovpn
+vpn/*.sh
+vpn/*.msi
+vpn/*.exe
+
+# Certificados SSL
+certs/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ── Artefactos de ejecución ───────────────────────────────────────────────────
+CTempn8n_exec.json
+*.log
+*.tmp
+*.pid
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+
+# ── IDE / Herramientas de desarrollo ─────────────────────────────────────────
+# Claude Code (workspace local — no compartir)
+.claude/
+# Skills descargadas (son dependencias, se regeneran con skills-lock.json)
+.agents/
+
+# ── Node.js ───────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# ── Volúmenes Docker (datos locales) ─────────────────────────────────────────
+postgres_data/
+n8n_data/
+ollama_data/
+typebot_db_data/
+qdrant_data/
+
+# ── Sistema operativo ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Pruebas y ejecuciones ─────────────────────────────────────────────────────
+exec_latest.json
