@@ -53,3 +53,7 @@ desktop.ini
 
 # ── Pruebas y ejecuciones ─────────────────────────────────────────────────────
 exec_latest.json
+
+# ── Entornos virtuales y cachés de pruebas ───────────────────────────────────
+.venv/
+.pytest_cache/
