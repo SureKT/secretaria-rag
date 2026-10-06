@@ -26,6 +26,29 @@ retrieval, the agent, the evaluation suite and deployment.
 ## Architecture
 
 ```
+Browser widget (plain HTML/JS, HTTPS via nginx)
+          │  POST /chat ── answer streamed back as server-sent events
+          ▼
+     FastAPI service ──── one instance per school (TENANT)
+          │
+          ├── memory     → PostgreSQL (conversations, messages)
+          │
+          ├── retrieval  → embed query with mxbai-embed-large (1024-dim)
+          │                → Qdrant, cosine, top-12 chunks,
+          │                  filtered to this school's chunks + the shared ones
+          │
+          └── generation → Ollama, token by token
+```
+
+Knowledge base: structured Markdown and YAML under `data/<school>/`, plus `data/shared/`
+for content that is the same for every school. One script chunks and embeds all of it into
+a single Qdrant collection. Everything is self-hosted: Ollama, Qdrant, PostgreSQL and nginx
+under Docker Compose, with inference on the institute's GPU.
+
+<details>
+<summary>The first version: n8n and Typebot</summary>
+
+```
 User → Typebot (chat UI, HTTPS via nginx)
           │
           ▼
@@ -39,16 +62,18 @@ User → Typebot (chat UI, HTTPS via nginx)
           └── LLM → Ollama (mistral-small3.2:24b) → answer
 ```
 
-Knowledge base: structured Markdown and YAML, ingested by a script into Qdrant.
-Everything self-hosted: Ollama, Qdrant, PostgreSQL, Typebot and nginx under Docker
-Compose, with inference on the institute's GPU.
+It was in front of real users before the rewrite. Its workflows are in `workflows/` and it
+still runs from `docker-compose.n8n.yml`. It predates the multi-school filter, so it
+searches the whole index. Decision 1 below explains why it was replaced.
+
+</details>
 
 ---
 
 ## The FastAPI service (`chat/`)
 
-This is the version that runs in production. It replaced the n8n agent and the Typebot front
-end shown above.
+This is the version that runs in production. It replaced the first version, an n8n agent
+behind a Typebot front end.
 
 - `POST /chat` streams the answer as server-sent events, token by token. After the answer it
   can send one more event with up to three follow-up questions, and then `[DONE]`.
@@ -92,12 +117,11 @@ pytest
 
 ### What is still being published
 
-The compose file, the ingestion script and the sample corpus in this repository still belong
-to the first architecture, and still run as described below. The multi-school ingestion and
-corpus that feed this service come next, together with the architecture decision records. A
-recorded demo is pending.
+`docs/arquitectura.md` and `docs/despliegue.md` still describe the first version, and
+`scripts/benchmark.py` still drives it. The decision record for the rewrite, the updated
+documents and an end-to-end evaluation of this service come next. A recorded demo is pending.
 
-## Four decisions worth explaining
+## Five decisions worth explaining
 
 ### 1. I chose n8n. Then I replaced it with FastAPI.
 
@@ -155,6 +179,25 @@ logical units — a course's full module list — whole rather than splitting th
 arbitrary character count. Base size is 500 characters with 100 of overlap, but the
 structure of the document wins over the number.
 
+### 5. Two schools share one index, and a filter keeps them apart
+
+The second school arrived with its own courses, timetables and contacts. A large part of
+the content, though, is identical for both: grants, access exams, anything decided by the
+region or the state.
+
+Separate collections per school would have isolated them by construction, but the common
+content would be stored and maintained twice. So there is one collection. Every chunk
+carries a `tenant` in its payload, taken from the folder it was ingested from, and every
+search filters on it: a deployment sees its own school plus `shared`, never the other one.
+
+The cost is that isolation now depends on that filter always being applied. It is built in
+exactly one function, and the tests check that the query sent to Qdrant carries it. The
+reasoning, with the options I discarded, is in
+[`docs/adr/ADR-002-multi-tenant-rag.md`](docs/adr/ADR-002-multi-tenant-rag.md).
+
+The sample corpus shows it: both fictional schools have an office-hours page with different
+hours, so the same question gets a different answer depending on `TENANT`.
+
 ---
 
 ## Evaluation
@@ -200,22 +243,28 @@ mxbai-embed-large · Typebot · PostgreSQL · Docker Compose · nginx · NVIDIA 
 ## Running it
 
 ```bash
-cp .env.example .env          # fill in the passwords
-docker compose up -d          # n8n, Qdrant, PostgreSQL, Typebot, nginx
+cp .env.example .env          # fill in the passwords; TENANT picks the school (norte or sur)
+mkdir certs && mkcert -cert-file certs/localhost.pem -key-file certs/localhost-key.pem localhost
+docker compose up -d --build  # FastAPI service, Qdrant, PostgreSQL, nginx
 
-node scripts/ingest.mjs       # chunk + embed data/ into Qdrant
+node scripts/ingest.mjs       # chunk + embed data/<school>/ into Qdrant
 ```
 
-Inference expects an Ollama instance reachable from the compose network, with the chat
-model and `mxbai-embed-large` pulled.
+Inference expects Ollama running on the host, with the chat model and `mxbai-embed-large`
+pulled. The widget is then at `https://localhost:3444`.
 
-Then, in this order, because each one answers a different question:
+To see the two schools kept apart, ask for the office hours, then set `TENANT=sur` in
+`.env`, run `docker compose up -d` again and repeat the question.
+
+Two diagnostics, in this order, because each one answers a different question:
 
 ```bash
 bash scripts/audit_retrieval.sh "que modulos tiene DAW"   # what did retrieval return, with scores
-bash scripts/rag_test.sh                                  # end-to-end without the orchestrator
-python3 scripts/benchmark.py                              # the full 36-test suite
+bash scripts/rag_test.sh                                  # end-to-end without the service
 ```
+
+The first version still runs with `docker compose -f docker-compose.n8n.yml up -d`, and
+`python3 scripts/benchmark.py` runs the 36-test suite against it.
 
 ## Repository layout
 
@@ -224,7 +273,9 @@ python3 scripts/benchmark.py                              # the full 36-test sui
 | `chat/api/` | The FastAPI service: streaming chat, memory, retrieval |
 | `chat/tests/` | Its tests |
 | `chat/widget/` | The chat widget: plain HTML, CSS and JavaScript |
-| `scripts/ingest.mjs` | Hierarchical chunking and embedding into Qdrant |
+| `docker-compose.yml` | The stack that runs today: service, Qdrant, PostgreSQL, nginx |
+| `docker-compose.n8n.yml` | The first version: n8n and Typebot |
+| `scripts/ingest.mjs` | Hierarchical chunking and embedding into Qdrant, one tenant per folder |
 | `scripts/audit_retrieval.sh` | Retrieval-only diagnostic, prints chunks with scores |
 | `scripts/rag_test.sh` | End-to-end RAG without n8n, reports answer and latency |
 | `scripts/benchmark.py` | The evaluation suite |
@@ -232,7 +283,9 @@ python3 scripts/benchmark.py                              # the full 36-test sui
 | `docs/arquitectura.md` | Component and data-flow detail |
 | `docs/historial-decisiones.md` | Decision log: problem, cause, decision, result |
 | `docs/benchmark-resultados.md` | Eval results per model |
-| `data/` | **Fictional** sample corpus (see note at the top) |
+| `docs/adr/` | Architecture decision records |
+| `data/norte/`, `data/sur/` | **Fictional** sample corpus, one folder per school (see note at the top) |
+| `data/shared/` | **Fictional** content common to every school |
 
 ## Licence
 
