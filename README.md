@@ -45,6 +45,58 @@ Compose, with inference on the institute's GPU.
 
 ---
 
+## The FastAPI service (`chat/`)
+
+This is the version that runs in production. It replaced the n8n agent and the Typebot front
+end shown above.
+
+- `POST /chat` streams the answer as server-sent events, token by token. After the answer it
+  can send one more event with up to three follow-up questions, and then `[DONE]`.
+- `GET /history/{session_token}` returns the last turns of a conversation, so the widget can
+  restore it after a reload.
+- `GET /health`.
+
+How a request flows:
+
+1. **Memory.** The browser holds a session token. Conversations and messages live in
+   PostgreSQL. Creating a conversation is a single `INSERT … ON CONFLICT`, so two concurrent
+   requests with a new token cannot create two rows.
+2. **Retrieval.** The text that gets embedded is the current message plus the previous user
+   turns, so a follow-up like "and the timetable?" still finds the right course. The Qdrant
+   search always carries a tenant filter: one deployment serves one school and sees that
+   school's chunks plus the shared ones, never another school's.
+3. **Generation.** Ollama streams the tokens. The model is asked to end with a marker line
+   followed by follow-up questions. `AnswerSplitter` holds back just enough characters to cut
+   that marker cleanly even when it arrives split across tokens, so the user never sees it.
+4. **Failure.** If anything in the stream fails, the user gets a short apology and the stream
+   closes properly instead of hanging.
+
+The widget in `chat/widget/` is plain HTML, CSS and JavaScript. It keeps an anonymous session
+token in the browser, restores the conversation on reload, and retries a dropped stream up to
+three times with backoff. Retrying is safe because the server only saves the messages once
+the answer is complete.
+
+The school names in the code are fictional (`norte` and `sur`), like the sample corpus.
+
+### Tests
+
+25 tests, and none of them needs a running service: Qdrant, Ollama and PostgreSQL are
+replaced by fakes.
+
+```bash
+cd chat
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+pytest
+```
+
+### What is still being published
+
+The compose file, the ingestion script and the sample corpus in this repository still belong
+to the first architecture, and still run as described below. The multi-school ingestion and
+corpus that feed this service come next, together with the architecture decision records. A
+recorded demo is pending.
+
 ## Four decisions worth explaining
 
 ### 1. I chose n8n. Then I replaced it with FastAPI.
@@ -55,7 +107,7 @@ of text after several seconds of silence, and people read that pause as the bot 
 broken. Nothing about the model or the prompt fixes a problem that lives in the delivery
 layer.
 
-So I rewrote the backend in FastAPI to stream tokens. The interaction became incremental
+So I rewrote the backend in FastAPI to stream tokens. That service is in [`chat/`](chat/). The interaction became incremental
 instead of a blocking wait, with the same model and the same answers.
 
 The point isn't that FastAPI beats n8n. It's that the tool I had picked myself turned out
@@ -169,6 +221,9 @@ python3 scripts/benchmark.py                              # the full 36-test sui
 
 | Path | What it is |
 |---|---|
+| `chat/api/` | The FastAPI service: streaming chat, memory, retrieval |
+| `chat/tests/` | Its tests |
+| `chat/widget/` | The chat widget: plain HTML, CSS and JavaScript |
 | `scripts/ingest.mjs` | Hierarchical chunking and embedding into Qdrant |
 | `scripts/audit_retrieval.sh` | Retrieval-only diagnostic, prints chunks with scores |
 | `scripts/rag_test.sh` | End-to-end RAG without n8n, reports answer and latency |
