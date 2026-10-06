@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, extname, basename } from 'path';
 
 const OLLAMA_URL = 'http://localhost:11434';
@@ -8,6 +8,16 @@ const EMBED_MODEL = 'mxbai-embed-large:latest';
 const DATA_DIR = new URL('../data', import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1');
 const CHUNK_SIZE = 500;    // chars por chunk
 const CHUNK_OVERLAP = 100; // solapamiento
+
+// ─── Multi-tenant (ver docs/adr/ADR-002-multi-tenant-rag.md) ────────────────
+// El corpus se organiza en data/<tenant>/*.md. El tenant se deriva del nombre
+// de la carpeta. "shared" = contenido genérico (autonómico o estatal) válido para todos.
+// Los centros son ficticios, como el corpus de ejemplo.
+const CENTER_NAMES = {
+  norte: 'Centro de FP Ejemplo Norte',
+  sur: 'Centro de FP Ejemplo Sur',
+  shared: '',            // contenido genérico, sin centro concreto
+};
 
 // ─── Qdrant: crear colección con índice full-text ───────────────────────────
 async function createCollection() {
@@ -36,6 +46,15 @@ async function createCollection() {
     const idxJ = await idxRes.json();
     console.log(`Índice full-text [${field}]:`, idxJ.status || idxJ.result);
   }
+
+  // Índice keyword sobre tenant → filtro multi-tenant eficiente en la búsqueda
+  const tenantIdxRes = await fetch(`${QDRANT_URL}/collections/${COLLECTION}/index`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ field_name: 'tenant', field_schema: 'keyword' })
+  });
+  const tenantIdxJ = await tenantIdxRes.json();
+  console.log('Índice keyword [tenant]:', tenantIdxJ.status || tenantIdxJ.result);
 }
 
 // ─── Ollama: embed ──────────────────────────────────────────────────────────
@@ -156,7 +175,11 @@ function enrichContent(context, content) {
 }
 
 // ─── Preamble natural para mejorar retrieval ────────────────────────────────
-function buildPreamble(context, content) {
+// `centerName` es el nombre del centro (p. ej. "Centro de FP Ejemplo Norte") o '' para
+// contenido `shared` (genérico, sin centro). `at` produce el sufijo "del <centro>"
+// solo cuando hay centro.
+function buildPreamble(context, content, centerName = '') {
+  const at = centerName ? ` del ${centerName}` : '';
   // context tiene formato: "[h1 > h2 > h3 > h4]\n"
   const match = context.match(/\[([^\]]+)\]/);
   if (!match) return context;
@@ -168,13 +191,14 @@ function buildPreamble(context, content) {
   // BECAS — no son ciclos; etiquetar como becas/ayudas para que rankeen en queries de becas
   if (h1.includes('beca') || h2.includes('beca')) {
     const name = h2 || h1;
-    return `Becas y ayudas económicas disponibles para el alumnado del Centro de FP Ejemplo: ${name}. ${context}`;
+    const who = centerName ? `del alumnado del ${centerName}` : 'para el alumnado de FP';
+    return `Becas y ayudas económicas disponibles ${who}: ${name}. ${context}`;
   }
 
   // CICLOS FORMATIVOS — solo documentos de familia profesional
   if (h1.includes('familia profesional')) {
     if (h2 && h3 && h3.includes('modulos')) {
-      return `Módulos y asignaturas del ciclo ${h2} del Centro de FP Ejemplo. ${context}`;
+      return `Módulos y asignaturas del ciclo ${h2}${at}. ${context}`;
     }
     if (h2 && h3 && h3.includes('informacion general')) {
       return `Información general del ciclo ${h2}: sede, turno, modalidad. ${context}`;
@@ -186,7 +210,7 @@ function buildPreamble(context, content) {
       return `Salidas profesionales del ciclo ${h2}. ${context}`;
     }
     if (h2 && h3) return `${h2} - ${h3}. ${context}`;
-    if (h2) return `Ciclo formativo ${h2} del Centro de FP Ejemplo. ${context}`;
+    if (h2) return `Ciclo formativo ${h2}${at}. ${context}`;
   }
 
   // OTROS DOCS (matrícula, trámites, logística, FAQ) — sin etiqueta "ciclo"
@@ -198,60 +222,79 @@ function buildPreamble(context, content) {
 async function main() {
   await createCollection();
 
-  const files = readdirSync(DATA_DIR)
-    .filter(f => extname(f) === '.md' || extname(f) === '.yaml' || extname(f) === '.yml');
+  // Cada subcarpeta de data/ es un tenant: data/<tenant>/*.md
+  const tenants = readdirSync(DATA_DIR)
+    .filter(d => statSync(join(DATA_DIR, d)).isDirectory());
+
+  if (tenants.length === 0) {
+    console.error(`\n❌ No hay subcarpetas de tenant en ${DATA_DIR}. Esperado data/<tenant>/*.md`);
+    process.exit(1);
+  }
 
   let totalPoints = 0;
   let idCounter = 1;
 
-  for (const file of files) {
-    const filePath = join(DATA_DIR, file);
-    const text = readFileSync(filePath, 'utf-8');
-    const chunks = chunkText(text);
+  for (const tenant of tenants) {
+    const centerName = CENTER_NAMES[tenant] ?? '';
+    if (!(tenant in CENTER_NAMES)) {
+      console.warn(`\n⚠️  tenant "${tenant}" no está en CENTER_NAMES; se usa nombre de centro vacío.`);
+    }
+    const tenantDir = join(DATA_DIR, tenant);
+    const files = readdirSync(tenantDir)
+      .filter(f => extname(f) === '.md' || extname(f) === '.yaml' || extname(f) === '.yml');
 
-    // Extraer título del documento (primera línea # o nombre de archivo)
-    const normalized = text.replace(/\r\n/g, '\n');
-    const titleMatch = normalized.match(/^#\s+(.+)/m);
-    const docTitle = titleMatch ? titleMatch[1].trim() : basename(file, extname(file));
+    console.log(`\n🏫 tenant "${tenant}" (${centerName || 'genérico/shared'}) → ${files.length} ficheros`);
 
-    console.log(`\n📄 ${file} (${docTitle}) → ${chunks.length} chunks`);
+    for (const file of files) {
+      const filePath = join(tenantDir, file);
+      const text = readFileSync(filePath, 'utf-8');
+      const chunks = chunkText(text);
 
-    const batch = [];
-    for (const chunk of chunks) {
-      process.stdout.write('.');
-      const { content, context } = chunk;
+      // Extraer título del documento (primera línea # o nombre de archivo)
+      const normalized = text.replace(/\r\n/g, '\n');
+      const titleMatch = normalized.match(/^#\s+(.+)/m);
+      const docTitle = titleMatch ? titleMatch[1].trim() : basename(file, extname(file));
 
-      // Enriquecer el contenido almacenado con contexto explícito para módulos
-      const enrichedContent = enrichContent(context, content);
-      // Preamble mejora retrieval semántico (solo para embed, no almacenado)
-      const preamble = buildPreamble(context, content);
-      // mxbai-embed-large: límite 512 tokens ≈ 1400 chars seguros
-      const textToEmbed = (preamble + enrichedContent).slice(0, 1400);
-      const vector = await embed(textToEmbed);
-      batch.push({
-        id: idCounter++,
-        vector,
-        payload: {
-          content: enrichedContent, // almacenar versión enriquecida
-          context,
-          source: file,
-          metadata: {}
+      console.log(`  📄 ${file} (${docTitle}) → ${chunks.length} chunks`);
+
+      const batch = [];
+      for (const chunk of chunks) {
+        process.stdout.write('.');
+        const { content, context } = chunk;
+
+        // Enriquecer el contenido almacenado con contexto explícito para módulos
+        const enrichedContent = enrichContent(context, content);
+        // Preamble mejora retrieval semántico (solo para embed, no almacenado)
+        const preamble = buildPreamble(context, content, centerName);
+        // mxbai-embed-large: límite 512 tokens ≈ 1400 chars seguros
+        const textToEmbed = (preamble + enrichedContent).slice(0, 1400);
+        const vector = await embed(textToEmbed);
+        batch.push({
+          id: idCounter++,
+          vector,
+          payload: {
+            content: enrichedContent, // almacenar versión enriquecida
+            context,
+            source: file,
+            tenant,                   // filtro multi-tenant (ver ADR-002)
+            metadata: {}
+          }
+        });
+
+        // insertar en batches de 20
+        if (batch.length >= 20) {
+          await upsertBatch([...batch]);
+          totalPoints += batch.length;
+          batch.length = 0;
         }
-      });
+      }
 
-      // insertar en batches de 20
-      if (batch.length >= 20) {
+      if (batch.length > 0) {
         await upsertBatch([...batch]);
         totalPoints += batch.length;
-        batch.length = 0;
       }
+      console.log(` ✓`);
     }
-
-    if (batch.length > 0) {
-      await upsertBatch([...batch]);
-      totalPoints += batch.length;
-    }
-    console.log(` ✓`);
   }
 
   console.log(`\n✅ Ingesta completada: ${totalPoints} puntos en colección '${COLLECTION}'`);

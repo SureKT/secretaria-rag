@@ -4,7 +4,7 @@
 > se publica. La estructura (encabezados jerárquicos, listas de módulos) es idéntica a
 > la original porque es lo que consume la estrategia de chunking.
 
-La familia profesional de **Informática y Comunicaciones** del Centro de FP Ejemplo ofrece
+La familia profesional de **Informática y Comunicaciones** del Centro de FP Ejemplo Norte ofrece
 ciclos de grado medio y superior orientados al desarrollo de aplicaciones, la
 administración de sistemas y la ciberseguridad. Se imparten en la **Sede Central**.
 
