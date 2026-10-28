@@ -9,6 +9,9 @@
 >
 > The most useful part is probably [`docs/historial-decisiones.md`](docs/historial-decisiones.md):
 > the problems, in the order I hit them, with their causes.
+>
+> In a hurry? A one-page case study covers the problem, the decisions and the evaluation:
+> [English](docs/case-study-en.pdf) · [Español](docs/caso-de-estudio-es.pdf).
 
 *The name is a pun that does not survive translation: **secretaría** is the school office,
 and **IA** is Spanish for AI.*
